@@ -33,9 +33,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.rmi.server.UID;
-import java.util.List;
 import java.util.Map;
-import java.util.Vector;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.ccsds.moims.mo.mal.MALException;
@@ -81,7 +79,7 @@ import org.ccsds.moims.mo.mal.transport.MALTransportFactory;
  *
  * URIs:
  *
- * The TCPIP Transpost, generates URIs, in the for of : tcpip://<host>:<port or client ID>-<service id>
+ * The TCPIP Transport, generates URIs, in the for of : tcpip://<host>:<port or client ID>-<service id>
  * There are two categories of URIs Client URIs, which are in the form of tcpip://<host>:<clientId>-<serviceId> , where
  * the client id is a unique identifier for the client on its host, for example : 4783fbc147ab7aa56e7fff and ServerURIs,
  * which are in the form of tcpip://<host>:<port>-<serviceId> and clients can actively connect to.
@@ -99,6 +97,11 @@ public class TCPIPTransport extends GENTransport
   public static final java.util.logging.Logger RLOGGER = Logger.getLogger("org.ccsds.moims.mo.mal.transport.tcpip");
 
   /**
+   * Port delimiter
+   */
+  private static final char PORT_DELIMITER = ':';
+
+  /**
    * The server port that the TCP transport listens for incoming connections
    */
   private final int serverPort;
@@ -109,15 +112,10 @@ public class TCPIPTransport extends GENTransport
   private final String serverHost;
 
   /**
-   * Port delimiter
+   * Holds the server connection listener
    */
-  private final char portDelimiter = ':';
+  private TCPIPServerConnectionListener serverConnectionListener = null;
 
-  /**
-   * Holds the list of data poller threads
-   */
-  private final List<Thread> pollerThreads = new Vector<Thread>();
-  
   /*
    * Constructor.
    *
@@ -175,11 +173,6 @@ public class TCPIPTransport extends GENTransport
     RLOGGER.log(Level.INFO, "TCPIP Wrapping body parts set to  : {0}", this.wrapBodyParts);
   }
 
-  /**
-   * Initialises this transport.
-   *
-   * @throws MALException On error
-   */
   @Override
   public void init() throws MALException
   {
@@ -197,9 +190,11 @@ public class TCPIPTransport extends GENTransport
         ServerSocket serverSocket = new ServerSocket(serverPort, 0, serverHostAddr);
 
         // create thread that will listen for connections
-        TCPIPServerConnectionListener serverConnectionListener = new TCPIPServerConnectionListener(this, serverSocket);
-        serverConnectionListener.start();
-        this.pollerThreads.add(serverConnectionListener);
+        synchronized (this)
+        {
+          serverConnectionListener = new TCPIPServerConnectionListener(this, serverSocket);
+          serverConnectionListener.start();
+        }
 
         RLOGGER.log(Level.INFO, "Started TCP Server Transport on port {0}", serverPort);
       }
@@ -229,7 +224,7 @@ public class TCPIPTransport extends GENTransport
   public boolean isSupportedInteractionType(final InteractionType type)
   {
     // Supports all IPs except Pub Sub
-    return (InteractionType.PUBSUB.getOrdinal() != type.getOrdinal());
+    return InteractionType.PUBSUB.getOrdinal() != type.getOrdinal();
   }
 
   @Override
@@ -244,16 +239,14 @@ public class TCPIPTransport extends GENTransport
   public void close() throws MALException
   {
     super.close();
-    
-    for (Thread pollerThread : pollerThreads)
+
+    synchronized (this)
     {
-      synchronized(pollerThread)
+      if (null != serverConnectionListener)
       {
-        pollerThread.interrupt();
+        serverConnectionListener.interrupt();
       }
     }
-    
-    pollerThreads.clear();
   }
 
   @Override
@@ -265,12 +258,12 @@ public class TCPIPTransport extends GENTransport
       //in this case we get the IP Address of the host and provide a unique id as the port.
       //the actual IP and port information does not matter as the server will not try
       //to connect to it, it is used as an identifier for the MAL in the URI.
-      return getDefaultHost() + portDelimiter + getRandomClientId();
+      return getDefaultHost() + PORT_DELIMITER + getRandomClientId();
     }
     else
     {
       //this a server (and potentially a client)
-      return serverHost + portDelimiter + serverPort;
+      return serverHost + PORT_DELIMITER + serverPort;
     }
   }
 
@@ -290,20 +283,10 @@ public class TCPIPTransport extends GENTransport
       }
 
       String host = targetAddress.split(":")[0];
-      int port;
-      try
-      {
-        //URIs are split into 2 categories, Server URIs 
-        port = Integer.parseInt(targetAddress.split(":")[1]);
-      }
-      catch (NumberFormatException nfe)
-      {
-        LOGGER.log(Level.WARNING, "Have no means to communicate with client URI : " + remoteRootURI);
-        throw new MALException("Have no means to communicate with client URI : " + remoteRootURI);
-      }
+      int port = Integer.parseInt(targetAddress.split(":")[1]);
 
       //create a message sender and receiver for the socket
-      TCPIPTransportDataTransceiver trans = new TCPIPTransportDataTransceiver(new Socket(host, port));
+      TCPIPTransportDataTransceiver trans = createDataTransceiver(new Socket(host, port));
 
       // create also a data reader thread for this socket in order to read messages from it 
       // no need to register this as it will automatically terminate when the uunderlying connection is terminated.
@@ -312,6 +295,11 @@ public class TCPIPTransport extends GENTransport
       rcvr.start();
 
       return trans;
+    }
+    catch (NumberFormatException nfe)
+    {
+      LOGGER.log(Level.WARNING, "Have no means to communicate with client URI : {0}", remoteRootURI);
+      throw new MALException("Have no means to communicate with client URI : " + remoteRootURI);
     }
     catch (UnknownHostException e)
     {
@@ -322,17 +310,25 @@ public class TCPIPTransport extends GENTransport
     {
       //there was a communication problem, we need to clean up the objects we created in the meanwhile
       communicationError(remoteRootURI, null);
-      
+
       //rethrow for higher MAL leyers
       throw new MALException("IO Exception", e);
     }
   }
 
-  protected synchronized void addDataPoller(GENMessagePoller newPoller)
+  /**
+   * Allows transport derived from this, where the message encoding is changed for example, to easily replace the
+   * message transceiver without worrying about the TCPIP connection
+   *
+   * @param socket the TCPIP socket
+   * @return the new transceiver
+   * @throws IOException if there is an error
+   */
+  protected TCPIPTransportDataTransceiver createDataTransceiver(Socket socket) throws IOException
   {
-    this.pollerThreads.add(newPoller);
+    return new TCPIPTransportDataTransceiver(socket);
   }
-  
+
   /**
    * Provide a default IP address for this host
    *
@@ -373,8 +369,6 @@ public class TCPIPTransport extends GENTransport
    */
   private String getRandomClientId()
   {
-    UID hostUniqueUID = new UID();
-    String hostUniqueUIDHex = hostUniqueUID.toString().replaceAll("[^abcdef0-9]", "");
-    return hostUniqueUIDHex;
+    return new UID().toString().replaceAll("[^abcdef0-9]", "");
   }
 }

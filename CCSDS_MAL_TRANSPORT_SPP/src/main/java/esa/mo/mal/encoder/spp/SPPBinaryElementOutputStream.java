@@ -1,10 +1,10 @@
 /* ----------------------------------------------------------------------------
- * Copyright (C) 2014      European Space Agency
+ * Copyright (C) 2015      European Space Agency
  *                         European Space Operations Centre
  *                         Darmstadt
  *                         Germany
  * ----------------------------------------------------------------------------
- * System                : CCSDS MO Generic Transport Framework
+ * System                : CCSDS MO SPP Transport Framework
  * ----------------------------------------------------------------------------
  * Licensed under the European Space Agency Public License, Version 2.0
  * You may not use this file except in compliance with the License.
@@ -18,25 +18,26 @@
  * limitations under the License. 
  * ----------------------------------------------------------------------------
  */
-package esa.mo.mal.transport.gen.util;
-
-import java.io.IOException;
+package esa.mo.mal.encoder.spp;
 
 /**
- * Simple interface for reading byte encoded messages from a low level transport. Used by the message poller class.
+ * Implements the MALElementInputStream interface for a fixed length binary encoding.
  */
-public interface GENMessageReceiver
+public class SPPBinaryElementOutputStream extends esa.mo.mal.encoder.binary.fixed.FixedBinaryElementOutputStream
 {
   /**
-   * Reads a MALMessage encoded as a byte array.
+   * Constructor.
    *
-   * @return the byte array containing the encoded MAL Message
-   * @throws IOException in case the encoded message cannot be read
+   * @param os Output stream to write to.
    */
-  byte[] readEncodedMessage() throws IOException;
+  public SPPBinaryElementOutputStream(final java.io.OutputStream os)
+  {
+    super(os);
+  }
 
-  /**
-   * Closes any used resources.
-   */
-  void close();
+  @Override
+  protected esa.mo.mal.encoder.binary.BinaryEncoder createBinaryEncoder(java.io.OutputStream os)
+  {
+    return new SPPBinaryEncoder(os);
+  }
 }

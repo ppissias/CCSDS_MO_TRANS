@@ -25,6 +25,11 @@ package esa.mo.mal.transport.gen.util;
  */
 public abstract class GENHelper
 {
+  private GENHelper()
+  {
+    // private contructor as not a real class but a place for static methods
+  }
+  
   /**
    * Creates a string version of byte buffer in hex.
    *
@@ -51,5 +56,4 @@ public abstract class GENHelper
 
     return hexString.toString();
   }
-
 }
